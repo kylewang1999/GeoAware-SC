@@ -48,6 +48,7 @@ conda create -n geo-aware python=3.9
 conda activate geo-aware
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 conda install nvidia/label/cuda-12.1.0::libcusolver-dev
+conda install pybullet
 git clone git@github.com:Junyi42/GeoAware-SC.git 
 cd GeoAware-SC
 pip install -e .

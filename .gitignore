@@ -7,10 +7,14 @@ __pycache__
 *.npz
 *.mp4
 *.png
+*.jpg
+*.h5
 *.ipynb
 *.pth
 *.zip
 *.log
+*.json
+*.svo
 zip*
 ap-10k
 build
