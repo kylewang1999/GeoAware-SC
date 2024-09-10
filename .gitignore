@@ -4,6 +4,10 @@ __pycache__
 *.pt
 *.tar.gz
 *.npy
+*.npz
+*.mp4
+*.png
+*.ipynb
 *.pth
 *.zip
 *.log

@@ -46,11 +46,13 @@ To install the required dependencies, use the following commands:
 ```bash
 conda create -n geo-aware python=3.9
 conda activate geo-aware
-conda install pytorch=1.13.1 torchvision=0.14.1 pytorch-cuda=11.6 -c pytorch -c nvidia
-conda install -c "nvidia/label/cuda-11.6.1" libcusolver-dev
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+conda install nvidia/label/cuda-12.1.0::libcusolver-dev
 git clone git@github.com:Junyi42/GeoAware-SC.git 
 cd GeoAware-SC
 pip install -e .
+pip install pillow==9.5.0 # https://github.com/facebookresearch/detectron2/issues/5010
+pip install torch -U      # the xformer wheel might have downgraded the torch version 
 ```
 
 PS: There are some common issues when installing Mask2Former. You might find [this issue](https://github.com/Junyi42/sd-dino/issues/11) helpful if you encounter any problems.
@@ -58,7 +60,7 @@ PS: There are some common issues when installing Mask2Former. You might find [th
 (Optional) You may want to install [xformers](https://github.com/facebookresearch/xformers) for efficient transformer implementation (which can significantly reduce the VRAM consumpution):
 
 ```
-pip install xformers==0.0.16
+ pip3 install -U xformers --index-url https://download.pytorch.org/whl/cu121
 ```
 
 (Optional) You may also want to install [SAM](https://github.com/facebookresearch/segment-anything) to extract the instance masks for adaptive pose alignment technique:

@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from PIL import Image
+from types import SimpleNamespace
 
 def convert_to_binary_mask(img_path, threshold=127, angle=None):
     # Open the image using Pillow
@@ -72,9 +73,10 @@ def get_distance_mutual_nn(feature1, feature2):
     avg_distance_1to2 = torch.min(distances_1to2, dim=1)[0][mutual_nn_1to2==1].mean()
     return avg_distance_1to2
 
-def resize(img, target_res=224, resize=True, to_pil=True, edge=False):
+def resize(img, target_res=224, resize=True, to_pil=True, edge=False, return_kp_coord_info=False):
     original_width, original_height = img.size
     original_channels = len(img.getbands())
+    x_offset, y_offset = 0, 0
     if not edge:
         canvas = np.zeros([target_res, target_res, 3], dtype=np.uint8)
         if original_channels == 1:
@@ -85,12 +87,14 @@ def resize(img, target_res=224, resize=True, to_pil=True, edge=False):
             width, height = img.size
             img = np.asarray(img)
             canvas[(width - height) // 2: (width + height) // 2] = img
+            y_offset += (width - height) // 2
         else:
             if resize:
                 img = img.resize((int(np.around(target_res * original_width / original_height)), target_res), Image.Resampling.LANCZOS)
             width, height = img.size
             img = np.asarray(img)
             canvas[:, (height - width) // 2: (height + width) // 2] = img
+            x_offset += (height - width) // 2
     else:
         if original_height <= original_width:
             if resize:
@@ -100,6 +104,7 @@ def resize(img, target_res=224, resize=True, to_pil=True, edge=False):
             top_pad = (target_res - height) // 2
             bottom_pad = target_res - height - top_pad
             img = np.pad(img, pad_width=[(top_pad, bottom_pad), (0, 0), (0, 0)], mode='edge')
+            y_offset += bottom_pad
         else:
             if resize:
                 img = img.resize((int(np.around(target_res * original_width / original_height)), target_res), Image.Resampling.LANCZOS)
@@ -108,10 +113,21 @@ def resize(img, target_res=224, resize=True, to_pil=True, edge=False):
             left_pad = (target_res - width) // 2
             right_pad = target_res - width - left_pad
             img = np.pad(img, pad_width=[(0, 0), (left_pad, right_pad), (0, 0)], mode='edge')
+            x_offset += left_pad
         canvas = img
     if to_pil:
         canvas = Image.fromarray(canvas)
-    return canvas
+        
+    if return_kp_coord_info:
+        ret = SimpleNamespace()
+        ret.canvas = canvas
+        ret.x_scale = width / original_width
+        ret.y_scale = height / original_height
+        ret.x_offset = x_offset
+        ret.y_offset = y_offset
+        return ret
+    else: 
+        return canvas
 
 def chunk_cosine_sim(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """ Computes cosine similarity between all possible pairs in two sets of vectors.
