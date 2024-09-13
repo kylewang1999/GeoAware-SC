@@ -1,3 +1,17 @@
 [submodule "third_party/droid"]
 	path = third_party/droid
 	url = https://github.com/kylewang1999/droid.git
+
+[submodule "third_party/droid/droid/oculus_reader"]
+    path = third_party/droid/droid/oculus_reader
+    url = git@github.com:rail-berkeley/oculus_reader.git
+    ignore = dirty
+[submodule "third_party/droid/droid/fairo"]
+    path = third_party/droid/droid/fairo
+    url = https://github.com/facebookresearch/fairo.git
+    ignore = dirty
+
+[submodule "third_party/droid/droid/fairo/droidlet/lowlevel/minecraft/client/lib/rapidjson"]
+	path = third_party/droid/droid/fairo/droidlet/lowlevel/minecraft/client/lib/rapidjson
+	url = https://github.com/Tencent/rapidjson.git
+	ignore = all

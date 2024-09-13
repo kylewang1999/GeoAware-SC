@@ -54,6 +54,8 @@ cd GeoAware-SC
 pip install -e .
 pip install pillow==9.5.0 # https://github.com/facebookresearch/detectron2/issues/5010
 pip install torch -U      # the xformer wheel might have downgraded the torch version 
+
+git submodule update --init --recursive # recursively clone all submodules (droid)
 ```
 
 PS: There are some common issues when installing Mask2Former. You might find [this issue](https://github.com/Junyi42/sd-dino/issues/11) helpful if you encounter any problems.

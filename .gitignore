@@ -1,4 +1,6 @@
 __pycache__
+**/__pycache__/
+*.pyc
 *.o
 *.egg-info
 *.pt
@@ -23,4 +25,7 @@ build
 PF-dataset-PASCAL
 SPair-71k
 third_party/ODISE/odise/model_zoo/configs
+third_party/droid/droid/fairo/droidlet/lowlevel/minecraft/client/lib/rapidjson
 wandb
+
+assets/calibration_results

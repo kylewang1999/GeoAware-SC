@@ -1,0 +1,2 @@
+urdf_path: "assets/franka/urdf/franka.urdf"
+output_dir: "assets/calibration_results"
