@@ -1,2 +1,6 @@
 urdf_path: "assets/franka/urdf/franka.urdf"
 output_dir: "assets/calibration_results"
+kalib_config_path: "configs/kalib_config_template.json"
+# configured_cams: ["varied_camera_1_left", "varied_camera_1_right", "varied_camera_2_left", "varied_camera_2_right"]
+configured_cams: ["varied_camera_2_left"]
+use_pnp_ransac: false

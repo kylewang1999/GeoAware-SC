@@ -121,13 +121,17 @@ def imgs_to_mp4(imgs, out_fname='output.mp4', fps=30):
 
 class VideoInference():
     
-    def __init__(self, ref_img, ref_kp_coord, mp4_path, img_size, out_video_path='output.mp4', out_keypoint_path='keypoint_inference_result.npz'):
+    def __init__(self, ref_img, ref_kp_coord, mp4_path, img_size, 
+                 out_video_path='output.mp4',
+                 out_keypoint_path='keypoint_inference_result.npz',
+                 img_affine_transform={'x_scale': 1, 'y_scale': 1, 'x_offset': 0, 'y_offset': 0}):
         
         self.ref_img = ref_img
         self.ref_kp_coord = ref_kp_coord
         self.mp4_path = mp4_path    # query each frame in this video
         self.out_video_path = out_video_path
         self.out_keypoint_path = out_keypoint_path
+        self.img_affine_transform = img_affine_transform
 
         self.img_size = img_size    # size to resize the video frame
         self.imgs = [resize(Image.fromarray(img), target_res=img_size, resize=True, to_pil=True)\
@@ -168,8 +172,9 @@ class VideoInference():
 
             heatmap = cos_map[0]
             heatmap = (heatmap - np.min(heatmap)) / (np.max(heatmap) - np.min(heatmap))  # Normalize to [0, 1]
-            
-        return max_yx[::-1]
+
+        max_xy = np.array(max_yx[::-1])
+        return max_xy
     
     def infer_video(self):
         
@@ -184,8 +189,15 @@ class VideoInference():
             annotated_imgs.append(img)
             inferred_coords.append(inferred_coord_xy)
         
+        inferred_coords = np.stack(inferred_coords)
+        affine_offset = np.array([self.img_affine_transform['x_offset'], self.img_affine_transform['y_offset']])
+        affine_scale = np.array([self.img_affine_transform['x_scale'], self.img_affine_transform['y_scale']])
+
+        inferred_coords = (inferred_coords - affine_offset[None,:]) / affine_scale[None,:]
+        
         imgs_to_mp4(np.array(annotated_imgs).transpose(0,3,1,2), self.out_video_path)
-        np.savez(self.out_keypoint_path, np.stack(inferred_coords))     # (N,2)
+        np.savez(self.out_keypoint_path, inferred_coords)     # (N,2)
+        print(f"Cam keypoint inference result saved to {abspath(self.out_keypoint_path)}")
         
         
     
@@ -204,11 +216,11 @@ if __name__ == '__main__':
     annotation_path = '/home/kyle/repos/droid_auto_calib/assets/droid_Thu_May_11_13_33_20_2023/img_thumbnails/keypoint_annotation.json'
     with open(annotation_path, 'r') as f:
         annotation_dict = json.load(f)
-    keypoint_coord = annotation_dict['third_person_1_left.jpg'][0]
+    kp_query_coord = annotation_dict['third_person_1_left.jpg'][0]
     resize_ret = resize(orig_img:=Image.open(img1_path).convert('RGB'), target_res=img_size, resize=True, to_pil=True, return_kp_coord_info=True)
     img1 = resize_ret.canvas
-    keypoint_coord[0] = keypoint_coord[0] * resize_ret.x_scale + resize_ret.x_offset
-    keypoint_coord[1] = keypoint_coord[1] * resize_ret.y_scale + resize_ret.y_offset
+    kp_query_coord[0] = kp_query_coord[0] * resize_ret.x_scale + resize_ret.x_offset
+    kp_query_coord[1] = kp_query_coord[1] * resize_ret.y_scale + resize_ret.y_offset
     
     
     
@@ -219,7 +231,11 @@ if __name__ == '__main__':
     # img2 = resize(Image.open(img2_path).convert('RGB'), target_res=img_size, resize=True, to_pil=True)
     img2 = resize(Image.fromarray(imgs[50]), target_res=img_size, resize=True, to_pil=True)
     
-    video_inference = VideoInference(img1, keypoint_coord, mp4_path, img_size)
+    video_inference = VideoInference(img1, kp_query_coord, mp4_path, img_size,
+                                     img_affine_transform={'x_scale': resize_ret.x_scale,
+                                                           'y_scale': resize_ret.y_scale,
+                                                           'x_offset': resize_ret.x_offset,
+                                                           'y_offset': resize_ret.y_offset})
     
     video_inference.infer_video()
 
@@ -228,7 +244,7 @@ if __name__ == '__main__':
     # for a in ax: a.axis('off')
     # ax[0].imshow(img1)
     # ax[0].set_title('source image')
-    # ax[0].add_patch(Circle(keypoint_coord, radius=10, color='red'))
+    # ax[0].add_patch(Circle(kp_query_coord, radius=10, color='red'))
     # ax[1].imshow(img2)
     # ax[1].set_title('target image')
     # plt.show()
@@ -244,6 +260,6 @@ if __name__ == '__main__':
     # # demo.plot_img_pairs(fig_size=5)
     # # demo = DemoSingleImage([img1,img2], torch.cat([feat1, feat2], dim=0), img_size)
     # demo = DemoSingleImage([img1,img2], torch.cat([feat1, feat2], dim=0), img_size)
-    # demo.plot_img_pairs(keypoint_coord, fig_size=5)
+    # demo.plot_img_pairs(kp_query_coord, fig_size=5)
     
     
