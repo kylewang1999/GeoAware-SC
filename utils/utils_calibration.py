@@ -1,20 +1,27 @@
-
-import os, sys, cv2, numpy as np, functools, yaml, json, warnings, open3d as o3d
-import pybullet as pb
-import pybullet_data
+import os, sys, cv2, numpy as np, functools, yaml, json, warnings, open3d as o3d, torch
+from os.path import join, dirname, abspath
+import imageio, shutil
+import pybullet_data, pybullet as pb
+import matplotlib.pyplot as plt
 from os.path import dirname, abspath, join, exists
 from scipy.spatial.transform import Rotation as R
+import matplotlib.colors as mcolors
 from tqdm import tqdm
 from types import SimpleNamespace as NSpace
 from utils.utils_calibration_solver import (
     solve_pnp, solve_pnp_ransac, rtvec_to_matrix, apply_se3_mat, apply_intrinsics_mat
 )
+from utils.utils_renderer import NVDiffrastRenderApiHelper
 
 
 sys.path.append(abspath('./third_party/droid'))
 from third_party.droid.droid.trajectory_utils.misc import load_trajectory
 from third_party.droid.droid.data_processing.timestep_processing import TimestepProcesser
 from third_party.droid.droid.data_loading.tf_data_loader import get_type_spec, get_tf_dataloader
+
+
+def get_repo_root():
+    return dirname(dirname(abspath(__file__)))
 
 
 def dict2namespace(d):
@@ -25,6 +32,13 @@ def dict2namespace(d):
         return [dict2namespace(v) for v in d]
     else:
         return d
+
+
+def imgs_to_gif(imgs:np.array, save_path:str, fps:int=30):
+    imgs = (imgs * 255).astype(np.uint8) if imgs.dtype != np.uint8 else imgs
+    imgs = np.array([cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in imgs])
+    imageio.mimsave(save_path, imgs, fps=fps)
+
 
 @functools.lru_cache(maxsize=None)
 def load_urdf_in_pybullet(urdf_file, echo=False):
@@ -51,9 +65,7 @@ def compute_forward_kinematics(
         pb.resetJointState(robotId, jointIndex=joint_index, targetValue=position)
 
     # Compute forward kinematics
-    link_positions = []
-    if return_pose:
-        link_mats = []
+    link_positions, link_mats = [], []
 
     if echo:
         print(f"the number of joints in panda.urdf is {pb.getNumJoints(robotId)}")
@@ -94,6 +106,77 @@ def convert_raw_extrinsics_to_mat(raw_data):
     raw_data = np.linalg.inv(raw_data)
     return raw_data
 
+def strcolor2rgb(strcolor:str):
+    ''' Convert a string color (e.g. 'red', 'blue', ...) to RGB values'''
+    return np.array(mcolors.to_rgb(strcolor))
+
+def colorize_points(points, strcolor='red'):
+    
+    color_arr = strcolor2rgb(strcolor).astype(np.float32)
+    
+    return color_arr[None,:].repeat(points.shape[0], axis=0)
+
+def render_mask(urdf_path, mesh_paths, pose, K, H, W, join_angles, get_mask_from_projection=False):
+
+    
+    renderer = NVDiffrastRenderApiHelper(mesh_paths, K, pose, H, W)
+    link_positions, link_trans_mats = compute_forward_kinematics(
+        urdf_path,
+        join_angles,
+        link_indices=list(range(6)),
+        return_pose=True,
+    )
+    mask = renderer.render_mask(link_poses=link_trans_mats)
+    mask = mask.detach().cpu().numpy()
+    
+    # for debugging: get the mask from projection rather than rendering
+    # if get_mask_from_projection:
+    sampled_points = np.concatenate(renderer.all_link_verts, axis=0)
+    projected_points = apply_intrinsics_mat(K, sampled_points)
+
+    # for x, y in projected_points:
+    #     if x >= 0 and x < W and y >= 0 and y < H:
+    #         mask[int(y), int(x)] = 1
+    
+    # pcd1 = o3d.geometry.PointCloud()
+    # pcd1.points = o3d.utility.Vector3dVector(link_positions)
+    # pcd1.colors = o3d.utility.Vector3dVector(colorize_points(link_positions, 'red'))
+    # pcd2 = o3d.geometry.PointCloud()
+    # pcd2.points = o3d.utility.Vector3dVector(sampled_points)
+    # pcd2.colors = o3d.utility.Vector3dVector(colorize_points(sampled_points, 'blue'))
+    # o3d.visualization.draw_plotly([pcd2])
+    
+    return mask, link_positions
+
+
+def overlay_mask_on_img(img, mask, mask_color_rgb, alpha, 
+                        show=False, save_to_disk=False, window_name=None):
+    # Ensure the shape of image is (H, W, 3)
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+    mask = (mask * 255).astype(np.uint8)
+
+    # Color the masks - different colors for visibility, rgb1 for mask1, rgb2 for mask2
+    colored_mask = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    colored_mask = np.where(colored_mask > 0, mask_color_rgb, colored_mask).astype(np.uint8)
+    cv2.imwrite('mask.png', colored_mask)
+    overlay_img = cv2.addWeighted(img, 1, colored_mask, alpha, 0)
+
+    return overlay_img.astype(np.uint8)
+
+
+def inverse_se3_mat(se3_mat):
+    assert se3_mat.shape == (4, 4)
+    se3_mat_inv = np.eye(4)
+    R = se3_mat[:3, :3]
+    t = se3_mat[:3, 3]
+    se3_mat_inv[:3, :3] = R.T
+    se3_mat_inv[:3, 3] = -R.T @ t
+    return se3_mat_inv
+
 
 class TrajectoryDataset():
     
@@ -115,6 +198,7 @@ class TrajectoryDataset():
         self.data_folder_path = data_folder_path
         self.recording_prefix = recording_prefix
         self.timestep_processer = TimestepProcesser(image_transform_kwargs=image_transform_kwargs,
+                                                    gripper_action_space='position',
                                                     **timestep_filtering_kwargs)
         self.timesteps =  [self.timestep_processer.forward(t, concat_states=False) for t in timesteps]
         
@@ -123,26 +207,33 @@ class TrajectoryDataset():
 
 class CalibratorCam2Base():
     
-    def __init__(self, trajectory_dataset, subsample_stride=1):
+    def __init__(self, trajectory_dataset, keypoint_inference_path, 
+                 subsample_stride=1, cherry_pick=False):
 
         self.trajectory_dataset = trajectory_dataset
         self.data_dir = trajectory_dataset.data_folder_path
-        self.timesteps = trajectory_dataset.timesteps
-        self.cam_kp_coords = None
-
-        cam_kp_coords_file = join(self.data_dir, 'keypoint_inference_result.npz')
-        if exists(cam_kp_coords_file):
-            self.cam_kp_coords = np.load(cam_kp_coords_file)['arr_0']
-            assert len(self.cam_kp_coords) == len(self.timesteps), f"Keypoint inference result length {len(self.cam_kp_coords)} mismatches with number of timesteps {len(self.timesteps)}"
-        else:
-            warnings.warn(f"Keypoint inference result not found at {cam_kp_coords_file}. Need to be inferred/tracked")
-            
-        self.cam_kp_coords = self.cam_kp_coords[::subsample_stride]
-        self.timesteps = self.timesteps[::subsample_stride]
+        self.timesteps = trajectory_dataset.timesteps  # list of droid timestep objects
+        self.time_indices = np.arange(len(self.timesteps))
         
-        cherry_pick_timestep_inds = [3,4,5,6]
-        self.cam_kp_coords = [self.cam_kp_coords[i] for i in cherry_pick_timestep_inds]
-        self.timesteps = [self.timesteps[i] for i in cherry_pick_timestep_inds]
+        # keypoint_inference_path = join(self.data_dir, 'keypoint_inference_result.npz')
+        if exists(keypoint_inference_path):
+            self.cam_kp_dict = np.load(keypoint_inference_path)
+        else:
+            warnings.warn(f"Keypoint inference result not found at {keypoint_inference_path}. Need to be inferred/tracked")
+            raise FileNotFoundError
+        
+        # self.cam_kp_coords = self.cam_kp_coords[::subsample_stride]
+        self.timesteps = self.timesteps[::subsample_stride]
+        self.time_indices = self.time_indices[::subsample_stride]
+        self.time_indices = [t for t in self.time_indices if str(t) in self.cam_kp_dict]
+
+        if cherry_pick:
+            cherry_pick_timestep_inds = [3,4,5,6,9,11,13]
+            # self.cam_kp_coords = [self.cam_kp_coords[i] for i in cherry_pick_timestep_inds]
+            self.timesteps = [self.timesteps[i] for i in cherry_pick_timestep_inds]
+            self.time_indices = [self.time_indices[i] for i in cherry_pick_timestep_inds]
+            
+        self.cam_kp_coords = np.array([self.cam_kp_dict[str(t)] for t in self.time_indices])
 
         # Configs
         with open('./configs/calibration_config.yaml', 'r') as file:
@@ -151,7 +242,11 @@ class CalibratorCam2Base():
 
         with open(self.config.kalib_config_path, 'r') as file:
             config_kalib = json.load(file)
-        self.config_kalib = config_kalib    # a template json file
+        self.config_kalib = config_kalib    # a template json file parsed as dict
+
+        with open(self.config.franka_config_path, 'r') as file:
+            config_franka = json.load(file)
+        self.config_franka = config_franka
 
         # Save paths
         self.save_paths = {key: join(self.config.output_dir, key) for key in self.config.configured_cams}
@@ -164,7 +259,7 @@ class CalibratorCam2Base():
                 os.makedirs(join(val, 'debug'), exist_ok=True)
 
     
-    def clean_up(self): os.rmdir(self.config.output_dir)
+    def clean_up(self): shutil.rmtree(self.config.output_dir)
         
         
     def kalibify_timestep(self, timestep):
@@ -198,6 +293,9 @@ class CalibratorCam2Base():
 
     
     def prepare_kalib_data(self):
+        ''' Write json files to temp directory containing:
+            - 
+        '''
     
         for timestep_i, timestep in (pbar:=tqdm(enumerate(self.timesteps), total=len(self.timesteps))):
             
@@ -231,7 +329,8 @@ class CalibratorCam2Base():
                 debug_img = self.save_imgs[camera][...,:3].copy()
                 # debug_img = cv2.circle(debug_img, tuple(projected_eefpos.astype(int)), 5, (0, 0, 255), -1)
                 # debug_img = cv2.circle(debug_img, tuple(projected_raw_eefpos.astype(int)), 5, (0, 255, 255), -1)
-                debug_img = cv2.circle(debug_img, tuple(self.cam_kp_coords[timestep_i].astype(int)), 10, (0, 255, 0), -1) # TODO: Separate kp_coords according to camera key
+                for j in range(self.cam_kp_coords.shape[1]):
+                    debug_img = cv2.circle(debug_img, tuple(self.cam_kp_coords[timestep_i,j].astype(int)), 10, (0, 255, 0), -1)
 
                 self.debug_save_imgs[camera] = debug_img
 
@@ -252,15 +351,19 @@ class CalibratorCam2Base():
                     self.config_kalib["objects"][0]["keypoints"][ptidx]["location"] = eefpos.tolist()
                     self.config_kalib["objects"][0]["keypoints"][ptidx]["name"] = "panda_left_finger"
                     self.config_kalib["objects"][0]["keypoints"][ptidx]["projected_location"] = projected_eefpos.tolist()
-                    if self.cam_kp_coords is not None:
-                        self.config_kalib["objects"][0]["keypoints"][ptidx]["predicted_location"] = self.cam_kp_coords[timestep_i].tolist()
-                    else:
-                        self.config_kalib["objects"][0]["keypoints"][ptidx]["predicted_location"] = [-999.0, -999.0]
+
+                # self.config_kalib["keypoints_nonjoint_predicted"] = {}
+                # for kp_id in range(self.cam_kp_coords.shape[1]):
+                #     self.config_kalib["keypoints_nonjoint_predicted"][kp_id] = self.cam_kp_coords[timestep_i, kp_id].tolist()
+                self.config_kalib["keypoints_nonjoint_predicted"] = self.cam_kp_coords[timestep_i].tolist()
 
                 json.dump(self.config_kalib, open(join(self.save_paths[camera], f"{timestep_i:06d}.json"), "w"))
 
 
     def calibrate_cameras(self):
+
+
+        imgs_dict = {camera: [] for camera in self.config.configured_cams}
 
         for camera in self.config.configured_cams:
 
@@ -269,6 +372,8 @@ class CalibratorCam2Base():
             json_paths = sorted([join(cam_data_dir, f) for f in os.listdir(cam_data_dir) if f.endswith('.json')])
             img_items = [cv2.imread(img_path) for img_path in img_paths]
             json_items = [json.load(open(json_path, 'r'))["objects"][0] for json_path in json_paths]
+            if not exists(join(cam_data_dir, "debug_calibration")):
+                os.makedirs(join(cam_data_dir, "debug_calibration"), exist_ok=True)
             
             robot_state_dicts = []
             
@@ -289,51 +394,93 @@ class CalibratorCam2Base():
                 
             word_to_local_mat = np.eye(4)
             
-            points3d_canonical = np.stack([d['gripper_cartesian_position'] for d in robot_state_dicts]) # (num_frames,3)
-            points2d_planar = np.stack([d['inference_gripper_proj_loc'] for d in robot_state_dicts])    # (num_frames,2)
             camera_intrinsics = np.stack([d['camera_intrinsics'] for d in robot_state_dicts])
+            points3d_canonical = np.stack([d['gripper_cartesian_position'] for d in robot_state_dicts]) # (num_frames,3)
+            points2d_planar = self.cam_kp_coords[:,0,:] # (num_frames,2)
+            # points2d_planar = np.stack([d['inference_gripper_proj_loc'] for d in robot_state_dicts])    # (num_frames,2)
+            
+            # vertices on robot base
+            verts_3d = np.array([
+                [-1.43076244e-01, -2.14468290e-03,  8.92312189e-03],   # In Robot's canonical frame
+                [-1.25680570e-01,  6.31571448e-04,  5.56254291e-02],
+                [-5.49979992e-02, -8.49999997e-05,  1.40000001e-01],
+                [ 5.49880005e-02, -1.55699998e-03,  1.40000001e-01],
+                [ 7.15439990e-02,  3.29000002e-04,  1.34900003e-03],
+                [-1.10056000e-02,  8.00555708e-02,  3.85714277e-03],
+                [-1.09613143e-02, -8.00555708e-02,  3.85714277e-03]], dtype=np.float32)
 
-            ret_val, translation, quaternion, reprojection_err = solve_pnp(points3d_canonical,
-                                                                           points2d_planar,
-                                                                           camera_intrinsics[0].copy()) # ! num_of_joints x 3, num_of_joints x 2, 3 x 3
+            verts_2d = self.cam_kp_coords[:,1:,:].mean(axis=0)            
+            # verts_2d = np.array([[1175,550],[1175,500],[1160,450],
+            #                      [1025,420],[950,475],[1050,550],[1000,450]], dtype=np.float32)
+            
+            pick_mask = self.cam_kp_coords[:,1:,:].var(axis=0).sum(axis=-1) < 100.
+            verts_2d = verts_2d[pick_mask] # remove keypoints that are not steady
+            verts_3d = verts_3d[pick_mask]
+            
+            points3d_canonical = np.vstack([points3d_canonical, verts_3d])
+            points2d_planar = np.vstack([points2d_planar, verts_2d])
+
+            ret_val, translation, quaternion, reprojection_err = \
+                solve_pnp(points3d_canonical,  points2d_planar, camera_intrinsics[0].copy()) # ! num_of_joints x 3, num_of_joints x 2, 3 x 3
+            
             extrinsics_mat = rtvec_to_matrix(translation, quaternion)
-            intrinsic_mat = camera_intrinsics[0].copy()
-            
-            # o3d.visualization.draw_geometries([
-            #     o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(points3d_canonical)),
-            # ])
-            
+            intrinsics_mat = camera_intrinsics[0].copy()
+
+            imgs = []
             for i, robot_state in (pbar:=tqdm(enumerate(robot_state_dicts), 
                                                         total=len(robot_state_dicts), 
                                                         desc=f"Rendering frames for {camera}")):
                 pbar.update(1)
                 img = robot_state["img_obj"]
                 
+                for j, (x,y) in enumerate(points2d_planar):
+                    cv2.circle(img, tuple(np.array([x,y]).astype(int)), 5, (0, 255, 255), -1)
+                    cv2.putText(img, f"{j}", tuple(np.array([x,y]).astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                
                 eef_coord_xyz = apply_se3_mat(extrinsics_mat,
                                               robot_state["gripper_cartesian_position"][None,...])
                 
-                eef_coord_xy = apply_intrinsics_mat(intrinsic_mat,
+                eef_coord_xy = apply_intrinsics_mat(intrinsics_mat,
                                                     eef_coord_xyz)
+                eef_coord_xy = np.nan_to_num(eef_coord_xy)
                 
                 cv2.circle(img, tuple(eef_coord_xy[0].astype(int)), 5, (0, 0, 255), -1)
-                cv2.imwrite(join(cam_data_dir, f"debug_reproj_calibrated_{i:06d}_{camera}.png"), img)
+                # cv2.circle(img, tuple(points2d_planar[i].astype(int)), 5, (0, 255, 255), -1)
+                cv2.putText(img, f"projected_eef", tuple(eef_coord_xy[0].astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                # cv2.putText(img, f"detected_eef", tuple(points2d_planar[i].astype(int)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                cv2.imwrite(join(cam_data_dir, f"debug_calibration/reproj_calibrated_{i:06d}_{camera}.png"), img)
+
+                mask, robot_verts = render_mask(self.config_franka['manipulator']['urdf_path'], 
+                                          self.config_franka['manipulator']['mesh_paths'],
+                                          extrinsics_mat, intrinsics_mat, 
+                                          img.shape[0], img.shape[1], 
+                                          robot_state["joint_positions"], 
+                                          get_mask_from_projection=False)
+
+
+                projected_verts = apply_intrinsics_mat(intrinsics_mat, apply_se3_mat(extrinsics_mat, points3d_canonical))
+                
+                for j, (x,y) in enumerate(projected_verts):
+                    if x >= 0 and x < img.shape[1] and y >= 0 and y < img.shape[0]:
+                        # mask[int(y), int(x)] = 1
+                        if j < len(points3d_canonical)-2:
+                            cv2.circle(img, (int(x),int(y)), 4, (255,0,0), -1)
+                            # cv2.putText(img, str(j), (int(x),int(y)), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
+                        else:
+                            cv2.circle(img, (int(x),int(y)), 4, (0,255,0), -1)
+                            # cv2.putText(img, f"additional kp {str(j-2)}", (int(x),int(y)), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+                
+                img = overlay_mask_on_img(img, mask.astype(np.uint8), (0, 0, 255), 1.0)
+                imgs.append(img)
+                
+                img_path = join(cam_data_dir, f"debug_calibration/render_reproj_calibrated_{i:06d}_{camera}.png")
+                cv2.imwrite(img_path, img)
             
-            
+            imgs_dict[camera] = imgs
+
+        print(f"Calibration completed for {camera}, images saved at {cam_data_dir}")
+        
+        return imgs_dict
+                
     
     
-
-
-if __name__ == '__main__':
-
-    # tf_data_loader = get_tf_dataloader(
-    #     path="/mnt/nvme2n1_4t/data_stash/droid_data/droid_100/1.0.0/",
-    #     batch_size=1,
-    # )
-
-    # "/mnt/nvme2n1_4t/data_stash/kalib_test_data/test_extract_droid_data"
-    trajectory_dataset = TrajectoryDataset(data_folder_path=abspath('./assets/droid_examples/droid_Thu_May_11_13_33_20_2023'),
-                                           recording_prefix="SVO",
-                                           timestep_filtering_kwargs={"gripper_action_space": ["cartesian_position"]})
-    calibrator = CalibratorCam2Base(trajectory_dataset, subsample_stride=10)
-    calibrator.prepare_kalib_data()
-    calibrator.calibrate_cameras()

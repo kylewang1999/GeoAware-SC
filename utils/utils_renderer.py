@@ -4,9 +4,8 @@ import matplotlib
 
 import trimesh
 
-import sys
+import os, sys, json
 import numpy as np
-import json
 import os.path as osp
 from os.path import dirname
 
@@ -15,8 +14,25 @@ import torch
 import torch.nn as nn
 import trimesh
 sys.path.append(dirname(dirname(dirname(__file__))))
-from easycalib.utils.setup_logger import setup_logger
-logger = setup_logger(__name__)
+
+blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
+opencv2blender = np.linalg.inv(blender2opencv)
+
+def apply_se3_mat(se3_mat:np.array, points:np.array, return_homogeneous=False):
+    assert se3_mat.shape == (4, 4)
+    assert len(points.shape)==2 and points.shape[1] in [3, 4], f"points shape must be (N,3) or (N,4), got {points.shape}"
+    
+    if isinstance(se3_mat, torch.Tensor): se3_mat = se3_mat.cpu().numpy()
+    if isinstance(points, torch.Tensor): points = points.cpu().numpy()
+
+    
+    if points.shape[1] == 3:
+        points = np.hstack((points, np.ones((points.shape[0], 1))))
+        
+    if return_homogeneous:
+        return (se3_mat @ points.T).T
+    else:
+        return (se3_mat @ points.T).T[:, :3]
 
 
 class NVDiffrastRenderApiHelper(nn.Module):
@@ -43,7 +59,7 @@ class NVDiffrastRenderApiHelper(nn.Module):
         all_frame_all_link_si = []
         K = self.K
 
-        all_link_si = []
+        all_link_si, all_link_verts = [], []
         for link_idx in range(self.nlinks):
             Tc_c2l = Tc_c2b @ link_poses[link_idx]
             verts, faces = (
@@ -52,10 +68,12 @@ class NVDiffrastRenderApiHelper(nn.Module):
             )
             si = self.renderer.render_mask(verts, faces, K=K, object_pose=Tc_c2l)
             all_link_si.append(si)
+            all_link_verts.append(apply_se3_mat(Tc_c2l, verts))
         all_link_si = torch.stack(all_link_si).sum(0).clamp(max=1)
         all_frame_all_link_si.append(all_link_si)
         all_frame_all_link_si = torch.stack(all_frame_all_link_si)
         all_frame_all_link_si = all_frame_all_link_si.squeeze(0)
+        self.all_link_verts = all_link_verts
 
         return all_frame_all_link_si
 
@@ -83,7 +101,7 @@ class NVDiffrastRenderApiHelper(nn.Module):
         return iou
 
 
-def K_to_projection(K, H, W, n=0.001, f=10.0):
+def K_to_projection(K, H, W, n=0.001, f=100.0):
     fu, fv, cu, cv = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     proj = torch.tensor([[2 * fu / W, 0, -2 * cu / W + 1, 0],
                          [0, 2 * fv / H, 2 * cv / H - 1, 0],
@@ -110,12 +128,12 @@ class NVDiffrastRenderer:
         # self.
         self.H, self.W = image_size
         self.resolution = image_size
-        blender2opencv = (
-            torch.tensor([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
-            .float()
-            .cuda()
-        )
-        self.opencv2blender = torch.inverse(blender2opencv)
+        self.blender2opencv = torch.tensor([[1, 0, 0, 0], 
+                                            [0, -1, 0, 0], 
+                                            [0, 0, -1, 0],
+                                            [0, 0, 0, 1]]).float().cuda()
+        
+        self.opencv2blender = torch.inverse(self.blender2opencv)
         self.glctx = dr.RasterizeCudaContext()
 
     def render_mask(self, verts, faces, K, object_pose, anti_aliasing=True):
@@ -133,6 +151,7 @@ class NVDiffrastRenderer:
         proj = proj.float().cuda()
 
         pose = self.opencv2blender @ object_pose
+        # pose = self.blender2opencv @ object_pose
         # pose = object_pose
         pos_clip = transform_pos(proj @ pose, verts)
 
@@ -151,9 +170,6 @@ class NVDiffrastRenderer:
 
 
 def main():
-    import pdb
-
-    pdb.set_trace()
 
     # code.interact(local=locals())
     pose = np.array(
@@ -188,7 +204,7 @@ def main():
     )
     H, W = 720, 1280
     # load json config from path: franka_config_path
-    franka_config_path = "./cotracker/config/franka_config.json"
+    franka_config_path = "assets/franka/config/franka_config.json"
     with open(franka_config_path, "r") as f:
         cfg = json.load(f)
     mesh_paths = cfg["manipulator"]["mesh_paths"]

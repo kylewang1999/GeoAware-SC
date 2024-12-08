@@ -15,3 +15,7 @@
 	path = third_party/droid/droid/fairo/droidlet/lowlevel/minecraft/client/lib/rapidjson
 	url = https://github.com/Tencent/rapidjson.git
 	ignore = all
+[submodule "third_party/nvdiffrast"]
+	path = third_party/nvdiffrast
+	url = https://github.com/NVlabs/nvdiffrast
+	ignore = all

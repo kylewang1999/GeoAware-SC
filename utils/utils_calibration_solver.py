@@ -99,7 +99,9 @@ def solve_pnp(
         camera_K,
         refinement=True,
         dist_coeffs=np.array([]),
-        method=cv2.SOLVEPNP_ITERATIVE,
+        # method=cv2.SOLVEPNP_ITERATIVE,
+        method=cv2.SOLVEPNP_EPNP,
+        # method=cv2.SOLVEPNP_UPNP,
         return_rvec_tvec=False,
 ):
     try:
@@ -132,7 +134,7 @@ def solve_pnp(
         reprojection_error = projections - reprojected_points.squeeze()
         reprojection_error = np.mean(np.linalg.norm(reprojection_error, axis=1))
     except Exception as e:
-        logger.info(f"Exception thrown when solving PNP: {e}.")
+        print(f"Exception thrown when solving PNP: {e}.")
         pnp_retval = False
         translation = None
         quaternion = None
@@ -175,8 +177,8 @@ def solve_pnp_ransac(
         reprojection_error = np.mean(np.linalg.norm(reprojection_error, axis=1))
         # print(f"The reprojection error is {reprojection_error}")
 
-    except:
-        logger.info(f"Exception thrown when solving PNP RANSAC: {e}.")
+    except Exception as e:
+        print(f"Exception thrown when solving PNP RANSAC: {e}.")
         pnp_retval = False
         translation = None
         quaternion = None

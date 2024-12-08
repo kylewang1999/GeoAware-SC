@@ -13,6 +13,14 @@
           "projected_location": null,
           "predicted_location": null
         }
+      ],
+      "keypoints_nonjoint": [
+        {
+          "name": null,
+          "location": null,
+          "projected_location": null,
+          "predicted_location": null
+        }
       ]
     }
   ]
